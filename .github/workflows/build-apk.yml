@@ -1,84 +1,14 @@
 
-name: Build StockMotion Studio 4K
-
-on:
-  workflow_dispatch:
-  push:
-    branches: [ main, master ]
-
-permissions:
-  contents: read
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Install Android SDK
-        run: |
-          SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
-          if [ ! -x "$SDKMANAGER" ]; then
-            SDKMANAGER="$(find "${ANDROID_HOME}/cmdline-tools" -type f -name sdkmanager | head -n 1)"
-          fi
-          yes | "$SDKMANAGER" --licenses || true
-          "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
-
       - name: Extract project ZIP
         run: |
           mkdir -p source
-          ZIP_FILE=$(find . -maxdepth 1 -type f -name 'StockMotionStudio4K-MVP01-source.zip' -print -quit)
+          ZIP_FILE=$(find . -type f -iname '*.zip' -not -path './.git/*' -print -quit)
+
           if [ -z "$ZIP_FILE" ]; then
-            echo "Project ZIP not found"
+            echo "ERROR: No ZIP file found in repository"
+            find . -maxdepth 3 -type f
             exit 1
           fi
+
+          echo "Found ZIP: $ZIP_FILE"
           unzip -o "$ZIP_FILE" -d source
-
-      - name: Fix Java and Kotlin targets
-        run: |
-          PROJECT_DIR=$(find source -name settings.gradle -printf '%h\n' | head -n 1)
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "Gradle project not found"
-            exit 1
-          fi
-          export PROJECT_DIR
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-
-          p = Path(os.environ["PROJECT_DIR"]) / "app" / "build.gradle"
-          s = p.read_text()
-          addition = """
-              compileOptions {
-                  sourceCompatibility JavaVersion.VERSION_17
-                  targetCompatibility JavaVersion.VERSION_17
-              }
-              kotlinOptions {
-                  jvmTarget = '17'
-              }
-          """
-          if "compileOptions" not in s:
-              s = s.replace("android {", "android {\n" + addition, 1)
-          p.write_text(s)
-          print("Java and Kotlin targets set to 17")
-          PY
-
-      - name: Build APK
-        run: |
-          PROJECT_DIR=$(find source -name settings.gradle -printf '%h\n' | head -n 1)
-          gradle --no-daemon -p "$PROJECT_DIR" assembleDebug
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: StockMotion-Studio-4K-APK
-          path: source/**/app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
