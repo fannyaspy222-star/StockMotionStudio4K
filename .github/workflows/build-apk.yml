@@ -42,13 +42,38 @@ jobs:
           fi
           unzip -o "$ZIP_FILE" -d source
 
-      - name: Build APK
+      - name: Fix Java and Kotlin targets
         run: |
           PROJECT_DIR=$(find source -name settings.gradle -printf '%h\n' | head -n 1)
           if [ -z "$PROJECT_DIR" ]; then
             echo "Gradle project not found"
             exit 1
           fi
+          export PROJECT_DIR
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          p = Path(os.environ["PROJECT_DIR"]) / "app" / "build.gradle"
+          s = p.read_text()
+          addition = """
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = '17'
+              }
+          """
+          if "compileOptions" not in s:
+              s = s.replace("android {", "android {\n" + addition, 1)
+          p.write_text(s)
+          print("Java and Kotlin targets set to 17")
+          PY
+
+      - name: Build APK
+        run: |
+          PROJECT_DIR=$(find source -name settings.gradle -printf '%h\n' | head -n 1)
           gradle --no-daemon -p "$PROJECT_DIR" assembleDebug
 
       - name: Upload APK
