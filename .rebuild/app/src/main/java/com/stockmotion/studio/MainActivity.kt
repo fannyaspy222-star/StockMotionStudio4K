@@ -5,6 +5,12 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.media.MediaMetadataRetriever
+import android.media.MediaExtractor
+import android.media.MediaMuxer
+import android.media.MediaCodec
+import android.media.MediaFormat
+import java.nio.ByteBuffer
 import android.os.Bundle
 import android.provider.MediaStore
 import android.view.Gravity
@@ -29,6 +35,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var generate: Button
     private lateinit var progress: ProgressBar
     private lateinit var video: VideoView
+    private lateinit var durationChoice: Spinner
 
     private val picker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -62,6 +69,13 @@ class MainActivity : ComponentActivity() {
             minLines = 3; maxLines = 5; textSize = 16f
         }
         root.addView(prompt)
+        root.addView(label("Durasi video", 15f))
+        durationChoice = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
+                listOf("3,5 detik", "5 detik", "7,5 detik", "10 detik", "15 detik (2 segmen)", "20 detik (2 segmen)"))
+            setSelection(3)
+        }
+        root.addView(durationChoice)
         generate = Button(this).apply {
             text = "Generate Video"; isEnabled = false
             setOnClickListener { generateVideo() }
@@ -86,8 +100,24 @@ class MainActivity : ComponentActivity() {
         worker.execute {
             try {
                 val file = convertImage(uri)
-                val resultUrl = callSpace(file, text)
-                val saved = saveMp4(resultUrl)
+                val requestedDuration = listOf(3.5, 5.0, 7.5, 10.0, 15.0, 20.0)[durationChoice.selectedItemPosition]
+                val clips = mutableListOf<File>()
+                var remaining = requestedDuration
+                var segmentInput = file
+                var segmentIndex = 1
+                while (remaining > 0.01) {
+                    val segmentDuration = minOf(10.0, remaining)
+                    runOnUiThread { status.text = "Membuat segmen " + segmentIndex + " untuk video " + requestedDuration.toInt() + " detik..." }
+                    val segmentPrompt = if (segmentIndex == 1) text else "Continue seamlessly from the previous segment. " + text
+                    val remote = callSpace(segmentInput, segmentPrompt, segmentDuration)
+                    val clip = downloadToCache(remote, "stockmotion-segment-" + segmentIndex + ".mp4")
+                    clips.add(clip)
+                    remaining -= segmentDuration
+                    if (remaining > 0.01) segmentInput = extractLastFrame(clip, segmentIndex)
+                    segmentIndex++
+                }
+                val finalFile = if (clips.size == 1) clips.first() else mergeVideoClips(clips)
+                val saved = saveLocalMp4(finalFile)
                 runOnUiThread {
                     progress.visibility = View.GONE; generate.isEnabled = true
                     status.text = "Selesai. Video tersimpan di Movies/StockMotion."
@@ -164,7 +194,7 @@ class MainActivity : ComponentActivity() {
         return jpg
     }
 
-    private fun callSpace(file: File, motion: String): String {
+    private fun callSpace(file: File, motion: String, durationSeconds: Double): String {
         val boundary = "----StockMotion${System.currentTimeMillis()}"
         val isJpeg = file.extension.equals("jpg", ignoreCase = true)
         val fileName = if (isJpeg) "input.jpg" else "input.png"
@@ -189,7 +219,7 @@ class MainActivity : ComponentActivity() {
         val args = JSONArray().apply {
             put(imageData); put(JSONObject.NULL); put(motion); put(6)
             put("色调艳丽, 过曝, 静态, 低质量, 畸形的肢体, 杂乱的背景")
-            put(3.5); put(1); put(1); put(42); put(true); put(6)
+            put(durationSeconds); put(1); put(1); put(42); put(true); put(6)
             put("UniPCMultistep"); put(3.0); put(16); put(false); put(true)
         }
         val submit = (URL("$space/gradio_api/call/generate_video").openConnection() as HttpURLConnection).apply {
@@ -240,6 +270,99 @@ class MainActivity : ComponentActivity() {
         c.disconnect()
         if (code !in 200..299) error("Layanan AI HTTP $code: ${body.take(200)}")
         return body
+    }
+
+    private fun downloadToCache(remote: String, name: String): File {
+        val target = File(cacheDir, name)
+        val connection = URL(remote).openConnection() as HttpURLConnection
+        connection.connectTimeout = 30000; connection.readTimeout = 180000
+        connection.inputStream.use { input -> target.outputStream().use { input.copyTo(it) } }
+        connection.disconnect()
+        require(target.length() > 1024) { "Video segmen kosong atau tidak lengkap." }
+        return target
+    }
+
+    private fun extractLastFrame(source: File, segment: Int): File {
+        val retriever = MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(source.absolutePath)
+            val bitmap = retriever.getFrameAtTime(-1, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                ?: error("Tidak dapat mengambil frame akhir segmen " + segment + ".")
+            val output = File(cacheDir, "stockmotion-continuation-" + segment + ".jpg")
+            output.outputStream().use { require(bitmap.compress(Bitmap.CompressFormat.JPEG, 92, it)) }
+            bitmap.recycle()
+            return output
+        } finally { retriever.release() }
+    }
+
+    private fun mergeVideoClips(clips: List<File>): File {
+        require(clips.size >= 2)
+        val output = File(cacheDir, "stockmotion-final-" + System.currentTimeMillis() + ".mp4")
+        val firstExtractor = MediaExtractor()
+        firstExtractor.setDataSource(clips.first().absolutePath)
+        val firstTrack = (0 until firstExtractor.trackCount).firstOrNull {
+            firstExtractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
+        } ?: error("Track video tidak ditemukan.")
+        val format = firstExtractor.getTrackFormat(firstTrack)
+        firstExtractor.release()
+        val muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        val outputTrack = muxer.addTrack(format)
+        muxer.start()
+        var timeOffset = 0L
+        try {
+            for ((clipIndex, clip) in clips.withIndex()) {
+                val extractor = MediaExtractor()
+                extractor.setDataSource(clip.absolutePath)
+                val track = (0 until extractor.trackCount).firstOrNull {
+                    extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
+                } ?: run { extractor.release(); error("Track video segmen " + (clipIndex + 1) + " tidak ditemukan.") }
+                val sourceFormat = extractor.getTrackFormat(track)
+                require(sourceFormat.getString(MediaFormat.KEY_MIME) == format.getString(MediaFormat.KEY_MIME) &&
+                    sourceFormat.getInteger(MediaFormat.KEY_WIDTH) == format.getInteger(MediaFormat.KEY_WIDTH) &&
+                    sourceFormat.getInteger(MediaFormat.KEY_HEIGHT) == format.getInteger(MediaFormat.KEY_HEIGHT)) {
+                    "Format video antarsegmen berbeda; gabungan dibatalkan agar tidak rusak."
+                }
+                extractor.selectTrack(track)
+                val buffer = ByteBuffer.allocate(4 * 1024 * 1024)
+                val info = MediaCodec.BufferInfo()
+                var lastPts = 0L
+                while (true) {
+                    buffer.clear()
+                    val size = extractor.readSampleData(buffer, 0)
+                    if (size < 0) break
+                    info.offset = 0; info.size = size
+                    info.presentationTimeUs = extractor.sampleTime + timeOffset
+                    info.flags = extractor.sampleFlags
+                    lastPts = extractor.sampleTime
+                    muxer.writeSampleData(outputTrack, buffer, info)
+                    extractor.advance()
+                }
+                val frameRate = if (sourceFormat.containsKey(MediaFormat.KEY_FRAME_RATE)) sourceFormat.getInteger(MediaFormat.KEY_FRAME_RATE).coerceAtLeast(1) else 16
+                timeOffset += lastPts + 1_000_000L / frameRate
+                extractor.release()
+            }
+        } finally { try { muxer.stop() } catch (_: Exception) {}; muxer.release() }
+        require(output.length() > 1024) { "Gagal menggabungkan video." }
+        return output
+    }
+
+    private fun saveLocalMp4(file: File): Uri {
+        val values = ContentValues().apply {
+            put(MediaStore.Video.Media.DISPLAY_NAME, "StockMotion-" + System.currentTimeMillis() + ".mp4")
+            put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+            put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/StockMotion")
+            put(MediaStore.Video.Media.IS_PENDING, 1)
+        }
+        val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+            ?: error("Tidak dapat membuat file video.")
+        try {
+            file.inputStream().use { input -> contentResolver.openOutputStream(uri).use { output ->
+                requireNotNull(output) { "Tidak dapat menyimpan video." }; input.copyTo(output)
+            } }
+            values.clear(); values.put(MediaStore.Video.Media.IS_PENDING, 0)
+            contentResolver.update(uri, values, null, null)
+            return uri
+        } catch (e: Exception) { contentResolver.delete(uri, null, null); throw e }
     }
 
     private fun saveMp4(remote: String): Uri {
