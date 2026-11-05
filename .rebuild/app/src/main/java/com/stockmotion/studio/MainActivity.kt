@@ -72,8 +72,8 @@ class MainActivity : ComponentActivity() {
         root.addView(label("Durasi video", 15f))
         durationChoice = Spinner(this).apply {
             adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
-                listOf("3,5 detik", "5 detik", "7,5 detik", "10 detik", "15 detik (2 segmen)", "20 detik (2 segmen)"))
-            setSelection(3)
+                listOf("3,5 detik (stabil)", "5 detik (eksperimen)", "7,5 detik (eksperimen)", "10 detik (eksperimen)"))
+            setSelection(0)
         }
         root.addView(durationChoice)
         generate = Button(this).apply {
@@ -97,7 +97,7 @@ class MainActivity : ComponentActivity() {
         if (text.isEmpty()) { status.text = "Tulis prompt gerakan dahulu."; return }
         generate.isEnabled = false; progress.visibility = View.VISIBLE; video.visibility = View.GONE
         status.text = "Mengirim gambar ke layanan AI dan menunggu antrean GPU..."
-        val requestedDuration = listOf(3.5, 5.0, 7.5, 10.0, 15.0, 20.0)[durationChoice.selectedItemPosition]
+        val requestedDuration = listOf(3.5, 5.0, 7.5, 10.0)[durationChoice.selectedItemPosition]
         worker.execute {
             try {
                 val file = convertImage(uri)
