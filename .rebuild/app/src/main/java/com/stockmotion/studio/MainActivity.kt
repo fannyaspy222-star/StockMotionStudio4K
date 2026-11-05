@@ -86,7 +86,6 @@ class MainActivity : ComponentActivity() {
         worker.execute {
             try {
                 val file = convertImage(uri)
-                if (file.length() > 8L * 1024 * 1024) error("Gambar hasil konversi lebih dari 8 MB.")
                 val resultUrl = callSpace(file, text)
                 val saved = saveMp4(resultUrl)
                 runOnUiThread {
@@ -104,35 +103,78 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun convertImage(uri: Uri): File {
-        val out = File(cacheDir, "stockmotion-input.png")
         val mime = contentResolver.getType(uri).orEmpty().lowercase()
-        contentResolver.openInputStream(uri).use { input ->
+        val source: Bitmap = contentResolver.openInputStream(uri).use { input ->
             requireNotNull(input) { "File gambar tidak dapat dibaca." }
             if (mime.contains("svg") || uri.toString().lowercase().contains(".svg")) {
                 val svg = SVG.getFromInputStream(input)
-                val w = (if (svg.documentWidth > 0) svg.documentWidth.toInt() else 1024).coerceIn(1, 2048)
-                val h = (if (svg.documentHeight > 0) svg.documentHeight.toInt() else 1024).coerceIn(1, 2048)
-                val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-                svg.renderToCanvas(android.graphics.Canvas(bitmap))
-                out.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-                bitmap.recycle()
+                val originalW = if (svg.documentWidth > 0) svg.documentWidth.toInt() else 1024
+                val originalH = if (svg.documentHeight > 0) svg.documentHeight.toInt() else 1024
+                val factor = minOf(1f, 2048f / maxOf(originalW, originalH).coerceAtLeast(1))
+                val w = (originalW * factor).toInt().coerceAtLeast(1)
+                val h = (originalH * factor).toInt().coerceAtLeast(1)
+                Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).also {
+                    svg.renderToCanvas(android.graphics.Canvas(it))
+                }
             } else {
-                val bitmap = BitmapFactory.decodeStream(input) ?: error("Format gambar tidak terbaca.")
-                out.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-                bitmap.recycle()
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                contentResolver.openInputStream(uri).use { stream -> BitmapFactory.decodeStream(stream, null, bounds) }
+                require(bounds.outWidth > 0 && bounds.outHeight > 0) { "Format gambar tidak terbaca." }
+                var sample = 1
+                while (bounds.outWidth / sample > 2048 || bounds.outHeight / sample > 2048) sample *= 2
+                val options = BitmapFactory.Options().apply { inSampleSize = sample; inPreferredConfig = Bitmap.Config.ARGB_8888 }
+                contentResolver.openInputStream(uri).use { stream ->
+                    BitmapFactory.decodeStream(stream, null, options)
+                } ?: error("Gambar tidak dapat didekode.")
             }
         }
-        return out
+        val maxSide = maxOf(source.width, source.height)
+        val scaled = if (maxSide > 2048) {
+            val ratio = 2048f / maxSide
+            Bitmap.createScaledBitmap(source, (source.width * ratio).toInt().coerceAtLeast(1),
+                (source.height * ratio).toInt().coerceAtLeast(1), true).also { if (it !== source) source.recycle() }
+        } else source
+        val png = File(cacheDir, "stockmotion-input.png")
+        png.outputStream().use { output ->
+            require(scaled.compress(Bitmap.CompressFormat.PNG, 100, output)) { "Gagal mengoptimalkan PNG." }
+        }
+        if (png.length() <= 12L * 1024 * 1024) {
+            scaled.recycle()
+            return png
+        }
+        // Fallback JPEG reduces very large PNGs; transparent areas become white.
+        val jpg = File(cacheDir, "stockmotion-input.jpg")
+        val flattened = Bitmap.createBitmap(scaled.width, scaled.height, Bitmap.Config.ARGB_8888)
+        android.graphics.Canvas(flattened).apply {
+            drawColor(android.graphics.Color.WHITE)
+            drawBitmap(scaled, 0f, 0f, null)
+        }
+        scaled.recycle()
+        var quality = 90
+        do {
+            jpg.outputStream().use { output ->
+                require(flattened.compress(Bitmap.CompressFormat.JPEG, quality, output)) { "Gagal mengoptimalkan gambar." }
+            }
+            quality -= 10
+        } while (jpg.length() > 12L * 1024 * 1024 && quality >= 60)
+        flattened.recycle()
+        require(jpg.length() <= 12L * 1024 * 1024) {
+            "Ukuran gambar masih terlalu besar setelah optimasi. Coba gambar dengan resolusi lebih rendah."
+        }
+        return jpg
     }
 
     private fun callSpace(file: File, motion: String): String {
         val boundary = "----StockMotion${System.currentTimeMillis()}"
+        val isJpeg = file.extension.equals("jpg", ignoreCase = true)
+        val fileName = if (isJpeg) "input.jpg" else "input.png"
+        val contentType = if (isJpeg) "image/jpeg" else "image/png"
         val upload = (URL("$space/gradio_api/upload").openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"; doOutput = true; connectTimeout = 30000; readTimeout = 60000
             setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
         }
         upload.outputStream.use { out ->
-            out.write("--$boundary\r\nContent-Disposition: form-data; name=\"files\"; filename=\"input.png\"\r\nContent-Type: image/png\r\n\r\n".toByteArray())
+            out.write("--$boundary\r\nContent-Disposition: form-data; name=\"files\"; filename=\"$fileName\"\r\nContent-Type: $contentType\r\n\r\n".toByteArray())
             file.inputStream().use { it.copyTo(out) }
             out.write("\r\n--$boundary--\r\n".toByteArray())
         }
@@ -140,7 +182,7 @@ class MainActivity : ComponentActivity() {
         val path = paths.optString(0)
         require(path.isNotBlank()) { "Upload gambar tidak mengembalikan path." }
         val imageData = JSONObject().apply {
-            put("path", path); put("url", "$space/gradio_api/file=$path"); put("orig_name", "input.png")
+            put("path", path); put("url", "$space/gradio_api/file=$path"); put("orig_name", fileName)
             put("size", JSONObject.NULL); put("mime_type", JSONObject.NULL)
             put("meta", JSONObject().put("_type", "gradio.FileData"))
         }
