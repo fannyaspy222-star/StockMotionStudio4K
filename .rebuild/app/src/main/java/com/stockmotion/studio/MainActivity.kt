@@ -162,8 +162,9 @@ class MainActivity : ComponentActivity() {
             connectTimeout = 30000; readTimeout = 300000; setRequestProperty("Accept", "text/event-stream")
         }
         var event = ""; val data = StringBuilder()
-        stream.inputStream.bufferedReader().useLines { lines ->
-            lines.forEach { line ->
+        try {
+            stream.inputStream.bufferedReader().useLines { lines ->
+                lines.forEach { line ->
                 when {
                     line.startsWith("event:") -> event = line.substringAfter("event:").trim()
                     line.startsWith("data:") -> data.append(line.substringAfter("data:").trim())
@@ -179,8 +180,12 @@ class MainActivity : ComponentActivity() {
                         }
                         event = ""; data.clear()
                     }
+                    }
                 }
             }
+        } catch (ready: VideoReady) {
+            stream.disconnect()
+            return ready.videoUrl
         }
         error("Antrean terputus sebelum video selesai. Coba lagi nanti.")
     }
