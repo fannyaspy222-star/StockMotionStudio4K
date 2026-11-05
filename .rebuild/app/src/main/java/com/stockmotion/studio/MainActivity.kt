@@ -36,6 +36,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var progress: ProgressBar
     private lateinit var video: VideoView
     private lateinit var durationChoice: Spinner
+    @Volatile private var currentStage: String = "Menyiapkan proses"
 
     private val picker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -72,7 +73,7 @@ class MainActivity : ComponentActivity() {
         root.addView(label("Durasi video", 15f))
         durationChoice = Spinner(this).apply {
             adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
-                listOf("3,5 detik (stabil)", "5 detik (eksperimen)", "7,5 detik (eksperimen)", "10 detik (eksperimen)"))
+                listOf("3,5 detik (pendek)", "5 detik (eksperimen)", "7,5 detik (eksperimen)", "10 detik (eksperimen)"))
             setSelection(0)
         }
         root.addView(durationChoice)
@@ -96,10 +97,12 @@ class MainActivity : ComponentActivity() {
         val text = prompt.text.toString().trim()
         if (text.isEmpty()) { status.text = "Tulis prompt gerakan dahulu."; return }
         generate.isEnabled = false; progress.visibility = View.VISIBLE; video.visibility = View.GONE
+        currentStage = "Menyiapkan gambar"
         status.text = "Mengirim gambar ke layanan AI dan menunggu antrean GPU..."
         val requestedDuration = listOf(3.5, 5.0, 7.5, 10.0)[durationChoice.selectedItemPosition]
         worker.execute {
             try {
+                currentStage = "Mengolah gambar di perangkat"
                 val file = convertImage(uri)
                 val clips = mutableListOf<File>()
                 var remaining = requestedDuration
@@ -109,14 +112,18 @@ class MainActivity : ComponentActivity() {
                     val segmentDuration = minOf(10.0, remaining)
                     runOnUiThread { status.text = "Membuat segmen " + segmentIndex + " untuk video " + requestedDuration.toInt() + " detik..." }
                     val segmentPrompt = if (segmentIndex == 1) text else "Continue seamlessly from the previous segment. " + text
+                    currentStage = "Menghubungi Hugging Face (segmen " + segmentIndex + ")"
                     val remote = callSpace(segmentInput, segmentPrompt, segmentDuration)
+                    currentStage = "Mengunduh video hasil (segmen " + segmentIndex + ")"
                     val clip = downloadToCache(remote, "stockmotion-segment-" + segmentIndex + ".mp4")
                     clips.add(clip)
                     remaining -= segmentDuration
                     if (remaining > 0.01) segmentInput = extractLastFrame(clip, segmentIndex)
                     segmentIndex++
                 }
+                currentStage = "Menyiapkan file video akhir"
                 val finalFile = if (clips.size == 1) clips.first() else mergeVideoClips(clips)
+                currentStage = "Menyimpan video ke perangkat"
                 val saved = saveLocalMp4(finalFile)
                 runOnUiThread {
                     progress.visibility = View.GONE; generate.isEnabled = true
@@ -126,7 +133,9 @@ class MainActivity : ComponentActivity() {
             } catch (e: Exception) {
                 runOnUiThread {
                     progress.visibility = View.GONE; generate.isEnabled = true
-                    status.text = "Gagal (${e.javaClass.simpleName}): ${e.message ?: e.toString()}"
+                    val detail = e.message?.takeIf { it.isNotBlank() } ?: "Tidak ada pesan dari sistem"
+                    val location = e.stackTrace.firstOrNull()?.let { "${it.className.substringAfterLast('.')}.${it.methodName}:${it.lineNumber}" } ?: "lokasi tidak tersedia"
+                    status.text = "Gagal pada tahap: $currentStage\n${e.javaClass.simpleName}: $detail\nDetail: $location"
                 }
             }
         }
@@ -195,6 +204,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun callSpace(file: File, motion: String, durationSeconds: Double): String {
+        currentStage = "Mengunggah gambar"
         val boundary = "----StockMotion${System.currentTimeMillis()}"
         val isJpeg = file.extension.equals("jpg", ignoreCase = true)
         val fileName = if (isJpeg) "input.jpg" else "input.png"
@@ -208,6 +218,7 @@ class MainActivity : ComponentActivity() {
             file.inputStream().use { it.copyTo(out) }
             out.write("\r\n--$boundary--\r\n".toByteArray())
         }
+        currentStage = "Membaca respons upload"
         val paths = JSONArray(readHttp(upload))
         val path = paths.optString(0)
         require(path.isNotBlank()) { "Upload gambar tidak mengembalikan path." }
@@ -222,14 +233,17 @@ class MainActivity : ComponentActivity() {
             put(durationSeconds); put(1); put(1); put(42); put(true); put(6)
             put("UniPCMultistep"); put(3.0); put(16); put(false); put(true)
         }
+        currentStage = "Mengirim permintaan generasi"
         val submit = (URL("$space/gradio_api/call/generate_video").openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"; doOutput = true; connectTimeout = 30000; readTimeout = 60000
             setRequestProperty("Content-Type", "application/json")
         }
         submit.outputStream.use { it.write(JSONObject().put("data", args).toString().toByteArray()) }
+        currentStage = "Membaca ID antrean"
         val eventId = JSONObject(readHttp(submit)).optString("event_id")
         require(eventId.isNotBlank()) { "Server tidak mengembalikan ID antrean." }
         runOnUiThread { status.text = "Job diterima. Menunggu proses GPU..." }
+        currentStage = "Menunggu antrean dan proses GPU"
         val stream = (URL("$space/gradio_api/call/generate_video/$eventId").openConnection() as HttpURLConnection).apply {
             connectTimeout = 30000; readTimeout = 300000; setRequestProperty("Accept", "text/event-stream")
         }
@@ -241,8 +255,9 @@ class MainActivity : ComponentActivity() {
                     line.startsWith("event:") -> event = line.substringAfter("event:").trim()
                     line.startsWith("data:") -> data.append(line.substringAfter("data:").trim())
                     line.isBlank() -> {
-                        if (event == "error") error(data.toString().take(300))
+                        if (event == "error") error(data.toString().take(300).ifBlank { "Server mengirim event error tanpa detail." })
                         if (event == "complete") {
+                            currentStage = "Membaca hasil video dari server"
                             val first = JSONArray(data.toString()).optJSONObject(0) ?: error("Format hasil video tidak dikenal.")
                             val url = first.optString("url").ifBlank {
                                 first.optString("path").takeIf { it.isNotBlank() }?.let { "$space/gradio_api/file=$it" }.orEmpty()
