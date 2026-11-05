@@ -46,7 +46,8 @@ jobs:
           test -f "$PROJECT_ZIP" || { echo "Missing $PROJECT_ZIP"; exit 1; }
           mkdir -p source
           unzip -q "$PROJECT_ZIP" -d source
-          PROJECT_DIR="$(find source -name settings.gradle -printf '%h\\n' | head -n 1)"
+          SETTINGS_FILE="$(find source -name settings.gradle -print -quit)"
+          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
           test -n "$PROJECT_DIR" || { echo "Gradle project not found in ZIP"; exit 1; }
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
