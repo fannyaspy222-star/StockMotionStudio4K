@@ -113,7 +113,10 @@ class ShowcaseActivity : ComponentActivity() {
         status.text = "Merender video di perangkat... jangan tutup aplikasi."
         Thread {
             try {
-                val file = renderVideo(title, username, cols, rows, seconds)
+                val file = renderVideo(title, username, cols, rows, seconds) { percent ->
+                    runOnUiThread { status.text = "Merender video... $percent%" }
+                }
+                runOnUiThread { status.text = "Menyimpan video ke galeri... 95%" }
                 val saved = saveVideo(file)
                 runOnUiThread {
                     status.text = "Selesai! Video tersimpan di Movies/StockMotion."
@@ -129,7 +132,7 @@ class ShowcaseActivity : ComponentActivity() {
         }.start()
     }
 
-    private fun renderVideo(title: String, username: String, cols: Int, rows: Int, seconds: Int): File {
+    private fun renderVideo(title: String, username: String, cols: Int, rows: Int, seconds: Int, onProgress: (Int) -> Unit): File {
         val width = 720; val height = 1280; val fps = 24
         val output = File(cacheDir, "showcase-${System.currentTimeMillis()}.mp4")
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
@@ -182,7 +185,9 @@ class ShowcaseActivity : ComponentActivity() {
                 finally { surface.unlockCanvasAndPost(canvas) }
                 frameCount++
                 drain(false)
+                if (frame % 6 == 0) onProgress(((frame + 1) * 90 / total).coerceIn(1, 90))
             }
+            onProgress(92)
             encoder.signalEndOfInputStream()
             drain(true)
             check(muxerStarted && output.length() > 1024) { "Encoder tidak menghasilkan video." }
