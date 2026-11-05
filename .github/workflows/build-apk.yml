@@ -1,21 +1,25 @@
-
-name: Build StockMotion Studio 4K
+name: Build StockMotion Studio 4K AI Image-to-Video
 
 on:
   workflow_dispatch:
   push:
-    branches: [main, master]
+    branches:
+      - ai-image-to-video-rebuild
 
 permissions:
   contents: read
 
+env:
+  PROJECT_ZIP: StockMotionStudio4K-MVP03.3-layout-ratio-source.zip
+
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
+      - name: Checkout rebuild branch
         uses: actions/checkout@v4
+        with:
+          ref: ai-image-to-video-rebuild
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -23,7 +27,12 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Install Android SDK
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Install Android SDK components
         run: |
           SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
           if [ ! -x "$SDKMANAGER" ]; then
@@ -32,54 +41,29 @@ jobs:
           yes | "$SDKMANAGER" --licenses || true
           "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Extract project ZIP
+      - name: Extract preserved MVP 0.3.3 source
         run: |
+          test -f "$PROJECT_ZIP" || { echo "Missing $PROJECT_ZIP"; exit 1; }
           mkdir -p source
-          ZIP_FILE=$(find . -type f -iname '*.zip' -not -path './.git/*' -print -quit)
-          if [ -z "$ZIP_FILE" ]; then
-            echo "Project ZIP not found"
-            find . -maxdepth 3 -type f
-            exit 1
-          fi
-          echo "Found ZIP: $ZIP_FILE"
-          unzip -o "$ZIP_FILE" -d source
+          unzip -q "$PROJECT_ZIP" -d source
+          PROJECT_DIR="$(find source -name settings.gradle -printf '%h\\n' | head -n 1)"
+          test -n "$PROJECT_DIR" || { echo "Gradle project not found in ZIP"; exit 1; }
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-      - name: Fix Java and Kotlin targets
+      - name: Overlay AI Image-to-Video 0.4.0 implementation
         run: |
-          PROJECT_DIR=$(find source -name settings.gradle -printf '%h\n' | head -n 1)
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "Gradle project not found"
-            exit 1
-          fi
-          export PROJECT_DIR
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
+          cp .rebuild/app.build.gradle "$PROJECT_DIR/app/build.gradle"
+          cp .rebuild/AndroidManifest.xml "$PROJECT_DIR/app/src/main/AndroidManifest.xml"
+          mkdir -p "$PROJECT_DIR/app/src/main/java/com/stockmotion/studio"
+          cp .rebuild/app/src/main/java/com/stockmotion/studio/MainActivity.kt "$PROJECT_DIR/app/src/main/java/com/stockmotion/studio/MainActivity.kt"
 
-          p = Path(os.environ["PROJECT_DIR"]) / "app" / "build.gradle"
-          s = p.read_text()
-          addition = """
-              compileOptions {
-                  sourceCompatibility JavaVersion.VERSION_17
-                  targetCompatibility JavaVersion.VERSION_17
-              }
-              kotlinOptions {
-                  jvmTarget = '17'
-              }
-          """
-          if "compileOptions" not in s:
-              s = s.replace("android {", "android {\n" + addition, 1)
-          p.write_text(s)
-          PY
+      - name: Build debug APK
+        run: gradle --no-daemon -p "$PROJECT_DIR" assembleDebug
 
-      - name: Build APK
-        run: |
-          PROJECT_DIR=$(find source -name settings.gradle -printf '%h\n' | head -n 1)
-          gradle --no-daemon -p "$PROJECT_DIR" assembleDebug
-
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: StockMotion-Studio-4K-APK
+          name: StockMotion-Studio-4K-0.4.0-debug
           path: source/**/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+          retention-days: 14
