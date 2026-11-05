@@ -62,6 +62,10 @@ class MainActivity : ComponentActivity() {
         root.addView(label("StockMotion Studio 4K", 25f))
         root.addView(label("AI Image-to-Video · Prototype 0.5.0", 14f))
         root.addView(Button(this).apply {
+            text = "VECTOR SHOWCASE MAKER · BUAT VIDEO PROMOSI"
+            setOnClickListener { startActivity(Intent(this@MainActivity, ShowcaseActivity::class.java)) }
+        })
+        root.addView(Button(this).apply {
             text = "Pilih gambar JPG / PNG / SVG"
             setOnClickListener { picker.launch(arrayOf("image/*", "image/svg+xml")) }
         })
