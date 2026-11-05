@@ -3,6 +3,7 @@
     <application android:theme="@style/AppTheme" android:label="StockMotion Studio 4K"
         android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher"
         android:allowBackup="false" android:usesCleartextTraffic="false">
+        <activity android:name=".ShowcaseActivity" android:exported="false" />
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
