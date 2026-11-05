@@ -97,10 +97,10 @@ class MainActivity : ComponentActivity() {
         if (text.isEmpty()) { status.text = "Tulis prompt gerakan dahulu."; return }
         generate.isEnabled = false; progress.visibility = View.VISIBLE; video.visibility = View.GONE
         status.text = "Mengirim gambar ke layanan AI dan menunggu antrean GPU..."
+        val requestedDuration = listOf(3.5, 5.0, 7.5, 10.0, 15.0, 20.0)[durationChoice.selectedItemPosition]
         worker.execute {
             try {
                 val file = convertImage(uri)
-                val requestedDuration = listOf(3.5, 5.0, 7.5, 10.0, 15.0, 20.0)[durationChoice.selectedItemPosition]
                 val clips = mutableListOf<File>()
                 var remaining = requestedDuration
                 var segmentInput = file
@@ -286,7 +286,8 @@ class MainActivity : ComponentActivity() {
         val retriever = MediaMetadataRetriever()
         try {
             retriever.setDataSource(source.absolutePath)
-            val bitmap = retriever.getFrameAtTime(-1, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+            val bitmap = retriever.getFrameAtTime(durationMs * 1000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                 ?: error("Tidak dapat mengambil frame akhir segmen " + segment + ".")
             val output = File(cacheDir, "stockmotion-continuation-" + segment + ".jpg")
             output.outputStream().use { require(bitmap.compress(Bitmap.CompressFormat.JPEG, 92, it)) }
