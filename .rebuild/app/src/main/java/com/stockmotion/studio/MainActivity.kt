@@ -59,7 +59,7 @@ class MainActivity : ComponentActivity() {
             setTextColor(0xFF172033.toInt()); setPadding(0, 12, 0, 12)
         }
         root.addView(label("StockMotion Studio 4K", 25f))
-        root.addView(label("AI Image-to-Video · Prototype 0.4.0", 14f))
+        root.addView(label("AI Image-to-Video · Prototype 0.5.0", 14f))
         root.addView(Button(this).apply {
             text = "Pilih gambar JPG / PNG / SVG"
             setOnClickListener { picker.launch(arrayOf("image/*", "image/svg+xml")) }
@@ -126,7 +126,7 @@ class MainActivity : ComponentActivity() {
             } catch (e: Exception) {
                 runOnUiThread {
                     progress.visibility = View.GONE; generate.isEnabled = true
-                    status.text = "Gagal: ${e.message ?: "Kesalahan layanan"}"
+                    status.text = "Gagal (${e.javaClass.simpleName}): ${e.message ?: e.toString()}"
                 }
             }
         }
