@@ -51,12 +51,12 @@ jobs:
           test -n "$PROJECT_DIR" || { echo "Gradle project not found in ZIP"; exit 1; }
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-      - name: Overlay AI Image-to-Video 0.4.0 implementation
+      - name: Overlay AI Image-to-Video and Showcase implementation
         run: |
           cp .rebuild/app.build.gradle "$PROJECT_DIR/app/build.gradle"
           cp .rebuild/AndroidManifest.xml "$PROJECT_DIR/app/src/main/AndroidManifest.xml"
-          mkdir -p "$PROJECT_DIR/app/src/main/java/com/stockmotion/studio"
-          cp .rebuild/app/src/main/java/com/stockmotion/studio/MainActivity.kt "$PROJECT_DIR/app/src/main/java/com/stockmotion/studio/MainActivity.kt"
+          mkdir -p "$PROJECT_DIR/app/src/main/java"
+          cp -R .rebuild/app/src/main/java/. "$PROJECT_DIR/app/src/main/java/"
 
       - name: Build debug APK
         run: gradle --no-daemon -p "$PROJECT_DIR" assembleDebug
@@ -64,7 +64,7 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: StockMotion-Studio-4K-0.4.0-debug
+          name: StockMotion-Studio-4K-0.5.1-debug
           path: source/**/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
